@@ -9,10 +9,18 @@ This is to keep track of my modifications to the ghettoVCBg2 script to make it f
 Synopsis: ./ghettoVCBg2.pl OPTIONS
 
 Command-specific options:
+   --backup_datastore
+      Name of backup destination datastore
+   --backup_directory
+      Name of backup destination directory
+   --backup_rotation
+      Number of backups for a given VM before deletion
    --config_dir
       Name of directory containing VM(s) backup configurations
    --dryrun (default '0')
       Set to 1 to enable dryrun mode (default 0)
+   --email_subject
+      Prepend string to email subject
    --output (default '/tmp/ghettoVCBg2.log')
       Full path to output log (default /tmp/ghettoVCBg2.log)
    --vmlist (required)

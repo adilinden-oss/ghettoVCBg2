@@ -6,6 +6,14 @@
 # http://www.engineering.ucsb.edu/~duonglt/vmware/
 ##################################################################
 
+#
+# Modifications by Adi Linden <adi@adis.on.ca>
+# Changes:
+# 
+# Sep 30, 2012
+# * Added additional command line options.
+#
+
 use strict;
 use warnings;
 
@@ -32,39 +40,40 @@ use Net::SMTP;
 my $SEND_MAIL = "no";
 my $EMAIL_HOST = "emailserver";
 my $EMAIL_DOMAIN = "localhost.localdomain";
-my $EMAIL_TO = 'William Lam <william@primp-industries.com.com>';
-my $EMAIL_FROM = 'ghettoVCBg2 <ghettoVCBg2@primp-industries.com.com>';
+my $EMAIL_TO = 'Adi Linden <adi@my-email.com>';
+my $EMAIL_FROM = 'ghettoVCBg2 <ghettoVCBg2@my-email.com>';
+my $EMAIL_SUBJECT = 'ghettoVCBg2';
 
 ###############################################################
 # NAME OF THE BACKUP DATASTORE
 ###############################################################
 
-my $VM_BACKUP_DATASTORE = "esx4-1-local-storage-1";
+my $CFG_VM_BACKUP_DATASTORE = "backup";
 
 ###############################################################
 # BACKUP DIRECTORY NAME ON DATASTORE
 ###############################################################
 
-my $VM_BACKUP_DIRECTORY = "WILLIAM_BACKUPS"; 
+my $CFG_VM_BACKUP_DIRECTORY = "main_backup"; 
 
 ####################################################
 # Number of backups for a given VM before deleting
 ####################################################
 
-my $VM_BACKUP_ROTATION_COUNT = "3";
+my $CFG_VM_BACKUP_ROTATION_COUNT = "3";
 
 ###################################################
 # Supported backup types
 # 'zeroedthick' 'eagerzeroedthick' 'thin' '2gbsparse'
 ###################################################
 
-my $DISK_BACKUP_FORMAT = "thin";
+my $CFG_DISK_BACKUP_FORMAT = "thin";
 
 ###################################################
 # Supported adapter types
 # 'buslogic' 'lsilogic'
 ###################################################
-my $ADAPTER_FORMAT = "buslogic";
+my $CFG_ADAPTER_FORMAT = "lsilogic";
 
 ###################################################################################################
 # Shutdown guestOS prior to running backups and power them back on afterwards
@@ -72,7 +81,7 @@ my $ADAPTER_FORMAT = "buslogic";
 # 1=enable, 0=disable (disable by default)
 ###################################################################################################
 
-my $POWER_VM_DOWN_BEFORE_BACKUP = "0";
+my $CFG_POWER_VM_DOWN_BEFORE_BACKUP = "0";
 
 ##############################################################
 # VM BACKUP DIRECTORY NAMING CONVENTION (default -YYYY-MM-DD)
@@ -84,16 +93,34 @@ my $VM_BACKUP_DIR_NAMING_CONVENTION = timeStamp('YMD');
 # VM Snapshot Memory & Quiesce
 # 1=enable, 0=disable (disable by default)
 ###################################################
-my $VM_SNAPSHOT_MEMORY = "0";
-my $VM_SNAPSHOT_QUIESCE = "0";
+my $CFG_VM_SNAPSHOT_MEMORY = "0";
+my $CFG_VM_SNAPSHOT_QUIESCE = "0";
 
 ################################################
 # LOG LEVEL VERBOSITY : "debug" or "info"
 ################################################
 
-my $LOG_LEVEL = "debug";
+my $CFG_LOG_LEVEL = "debug";
 
 ########################## DO NOT MODIFY PAST THIS LINE ##########################
+
+############################
+# GLOBAL CONFIG VARIABLES
+###########################
+my $CFG_VM_VMDK_FILES = "all"; 
+
+my $VM_BACKUP_DATASTORE;
+my $VM_BACKUP_DIRECTORY;
+my $VM_BACKUP_ROTATION_COUNT;
+my $DISK_BACKUP_FORMAT;
+my $ADAPTER_FORMAT;
+my $POWER_VM_DOWN_BEFORE_BACKUP;
+my $VM_SNAPSHOT_MEMORY;
+my $VM_SNAPSHOT_QUIESCE;
+my $LOG_LEVEL;
+my $VM_VMDK_FILES; 
+
+configDefaultBackupParameter();
 
 #####################
 # GLOBAL VARIABLES 
@@ -125,7 +152,6 @@ my %loglevel=(
 );
 
 my $LOGLEVEL: shared = $loglevel{$LOG_LEVEL};
-my $VM_VMDK_FILES = "all"; 
 
 #####################
 # interprocess communication
@@ -170,6 +196,26 @@ my %opts = (
 	help => "Name of directory containing VM(s) backup configurations",
 	required => 0,
 	},
+	backup_directory => {
+	type => "=s",
+	help => "Name of backup destination directory",
+	required => 0,
+	},
+	backup_datastore => {
+	type => "=s",
+	help => "Name of backup destination datastore",
+	required => 0,
+	},
+	backup_rotation => {
+	type => "=s",
+	help => "Number of backups for a given VM before deletion",
+	required => 0,
+	},
+	email_subject => {
+	type => "=s",
+	help => "Prepend string to email subject",
+	required => 0,
+	},
 );
 
 Opts::add_options(%opts);
@@ -192,15 +238,31 @@ if(Opts::option_is_set('config_dir')) {
 	$configDir = Opts::get_option('config_dir');
 }
 
+if(Opts::option_is_set('backup_directory')) {
+	$CFG_VM_BACKUP_DIRECTORY = Opts::get_option('backup_directory');
+}
+
+if(Opts::option_is_set('backup_datastore')) {
+	$CFG_VM_BACKUP_DATASTORE = Opts::get_option('backup_datastore');
+}
+
+if(Opts::option_is_set('backup_rotation')) {
+	$CFG_VM_BACKUP_ROTATION_COUNT = Opts::get_option('backup_rotation');
+}
+
+if(Opts::option_is_set('email_subject')) {
+	$EMAIL_SUBJECT = Opts::get_option('email_subject');
+}
+
+# Refresh default config variables from optional command line overrides
+configDefaultBackupParameter();
+
 $optsPassed = "yes";
 
-#only validate if we're not using a config
-if(defined($configDir)) {
-	#validate all required params are populated
-	if( $VM_BACKUP_DATASTORE eq "" || $VM_BACKUP_DIRECTORY eq "" || $VM_BACKUP_ROTATION_COUNT eq "" || $DISK_BACKUP_FORMAT eq "" || $ADAPTER_FORMAT eq "" || $POWER_VM_DOWN_BEFORE_BACKUP eq "" || $LOG_LEVEL eq ""  ) {
+#validate all required default config params are populated
+if( $CFG_VM_BACKUP_DATASTORE eq "" || $CFG_VM_BACKUP_DIRECTORY eq "" || $CFG_VM_BACKUP_ROTATION_COUNT eq "" || $CFG_DISK_BACKUP_FORMAT eq "" || $CFG_ADAPTER_FORMAT eq "" || $CFG_LOG_LEVEL eq ""  ) {
 		print "\nA required variable has not been defined, plesae go back and verify!\n";
 		exit;
-	}
 }
 
 #retrieve all VIMA targets
@@ -240,28 +302,28 @@ if($vima_ver eq "1.0.0") {
 	die "Script only supports VMware VIMA 1.0.0 and vMA 4.x.x+\n";
 }
 
-&log("info", "============================== ghettoVCBg2 LOG START ==============================");
+&log("info", "========== ghettoVCBg2 LOG START ==========");
 $semCopyTaskStart->up; # now CopyTask can do loging
 
 if($vmlist) {
 	&processFile($vmlist);
 }
 
-if(!defined($configDir)) {
-        &log("info", "CONFIG - BACKUP_LOG_OUTPUT = " . $backup_log_output);
-        &log("info", "CONFIG - VM_BACKUP_DATASTORE = " . $VM_BACKUP_DATASTORE);
-        &log("info", "CONFIG - VM_BACKUP_DIRECTORY = " . $VM_BACKUP_DIRECTORY);
-        &log("info", "CONFIG - DISK_BACKUP_FORMAT = " . $DISK_BACKUP_FORMAT);
-        &log("info", "CONFIG - ADAPTER_FORMAT = " . $ADAPTER_FORMAT);
-        my $powerDowntext = ($POWER_VM_DOWN_BEFORE_BACKUP ? "YES" : "NO");
-        &log("info", "CONFIG - POWER_VM_DOWN_BEFORE_BACKUP = " . $powerDowntext);
-        my $memtext = ($VM_SNAPSHOT_MEMORY ? "YES" : "NO");
-        &log("info", "CONFIG - VM_SNAPSHOT_MEMORY = " . $memtext);
-        my $quitext = ($VM_SNAPSHOT_QUIESCE ? "YES" : "NO");
-        &log("info", "CONFIG - VM_SNAPSHOT_QUIESCE = ". $quitext);
-        &log("info", "CONFIG - VM_BACKUP_DIR_NAMING_CONVENTION = " . $VM_BACKUP_DIR_NAMING_CONVENTION);
-	&log("info", "CONFIG - VM_VMDK_FILES = " . $VM_VMDK_FILES . "\n"); 
-}
+&log("debug", "-----  Default Parameters  -----");
+&log("debug", "CONFIG - BACKUP_LOG_OUTPUT = " . $backup_log_output);
+&log("debug", "CONFIG - VM_BACKUP_DATASTORE = " . $VM_BACKUP_DATASTORE);
+&log("debug", "CONFIG - VM_BACKUP_DIRECTORY = " . $VM_BACKUP_DIRECTORY);
+&log("debug", "CONFIG - VM_BACKUP_ROTATION_COUNT = " . $VM_BACKUP_ROTATION_COUNT);
+&log("debug", "CONFIG - DISK_BACKUP_FORMAT = " . $DISK_BACKUP_FORMAT);
+&log("debug", "CONFIG - ADAPTER_FORMAT = " . $ADAPTER_FORMAT);
+my $powerDowntext = ($POWER_VM_DOWN_BEFORE_BACKUP ? "YES" : "NO");
+&log("debug", "CONFIG - POWER_VM_DOWN_BEFORE_BACKUP = " . $powerDowntext);
+my $memtext = ($VM_SNAPSHOT_MEMORY ? "YES" : "NO");
+&log("debug", "CONFIG - VM_SNAPSHOT_MEMORY = " . $memtext);
+my $quitext = ($VM_SNAPSHOT_QUIESCE ? "YES" : "NO");
+&log("debug", "CONFIG - VM_SNAPSHOT_QUIESCE = ". $quitext);
+&log("debug", "CONFIG - VM_BACKUP_DIR_NAMING_CONVENTION = " . $VM_BACKUP_DIR_NAMING_CONVENTION);
+&log("debug", "CONFIG - VM_VMDK_FILES = " . $VM_VMDK_FILES . "\n"); 
 
 foreach my $vima_host (@vima_targets) {
 	$host = $vima_host;
@@ -330,7 +392,7 @@ foreach my $vima_host (@vima_targets) {
 getFinalList(@vm_backup_list);
 &log("debug", "Main: Calling final clean up");
 &cleanUp();
-&log("info","============================== ghettoVCBg2 LOG END ==============================\n\n");
+&log("info","========== ghettoVCBg2 LOG END ==========\n\n");
 # End main
 
 if($SEND_MAIL eq "yes") {
@@ -354,7 +416,7 @@ sub sendMail {
         $smtp->data();
         $smtp->datasend('From: '.$EMAIL_FROM."\n");
         $smtp->datasend('To: '.$EMAIL_TO."\n");
-        $smtp->datasend('Subject: ghettoVCBg2 Completed'.timeStamp('MDYHMS')."\n");
+        $smtp->datasend('Subject: '.$EMAIL_SUBJECT.' Completed '.timeStamp('MDYHMS')."\n");
         $smtp->datasend("\n");
 
         open (HANDLE, $backup_log_output) or die(timeStamp('MDYHMS'), "ERROR: Can not locate log \"$backup_log_output\" !\n");
@@ -389,7 +451,6 @@ sub cleanUp {
 	if($@) { &log("warn", "cleanUp: ". $@ ); }
 }
 
-
 ########################
 # Copy Thread
 ########################
@@ -419,12 +480,24 @@ sub copyTask {
 	&log("debug", "copyTask: die ...");
 }
 
+sub configDefaultBackupParameter {
+    $VM_BACKUP_DATASTORE = $CFG_VM_BACKUP_DATASTORE;
+    $VM_BACKUP_DIRECTORY = $CFG_VM_BACKUP_DIRECTORY;
+    $VM_BACKUP_ROTATION_COUNT = $CFG_VM_BACKUP_ROTATION_COUNT;
+    $DISK_BACKUP_FORMAT = $CFG_DISK_BACKUP_FORMAT;
+    $ADAPTER_FORMAT = $CFG_ADAPTER_FORMAT;
+    $POWER_VM_DOWN_BEFORE_BACKUP = $CFG_POWER_VM_DOWN_BEFORE_BACKUP;
+    $VM_SNAPSHOT_MEMORY = $CFG_VM_SNAPSHOT_MEMORY;
+    $VM_SNAPSHOT_QUIESCE = $CFG_VM_SNAPSHOT_QUIESCE;
+    $LOG_LEVEL = $CFG_LOG_LEVEL;
+    $VM_VMDK_FILES = $CFG_VM_VMDK_FILES;
+}
+
 sub reConfigToBackupDirParameter {
 	my ($vm_name) =  @_;
 	
-	$VM_VMDK_FILES = "all";
-	
-		
+    configDefaultBackupParameter();
+
 	my @goodparam = qw(VM_BACKUP_DATASTORE VM_BACKUP_DIRECTORY VM_BACKUP_ROTATION_COUNT DISK_BACKUP_FORMAT ADAPTER_FORMAT POWER_VM_DOWN_BEFORE_BACKUP LOG_LEVEL VM_SNAPSHOT_MEMORY VM_SNAPSHOT_QUIESCE VM_VMDK_FILES);
 
 	my $file = "$configDir/$vm_name";
@@ -445,25 +518,45 @@ sub reConfigToBackupDirParameter {
 		}
 		close(CONFIG);	
 		
-		&log("debug", "reConfigureBackupParams: VM - " . $vm_name);
+		&log("info", "reConfigureBackupParams: VM - " . $vm_name);
 
 		#reconfigure variables
-		$LOG_LEVEL = $config{LOG_LEVEL};
-		$LOGLEVEL = $loglevel{$LOG_LEVEL};
-				
-		$VM_BACKUP_DATASTORE = $config{VM_BACKUP_DATASTORE};
-		$VM_BACKUP_DIRECTORY = $config{VM_BACKUP_DIRECTORY};
-		$VM_BACKUP_ROTATION_COUNT = $config{VM_BACKUP_ROTATION_COUNT};
-		$DISK_BACKUP_FORMAT = $config{DISK_BACKUP_FORMAT};
-		$ADAPTER_FORMAT = $config{ADAPTER_FORMAT};
-		$POWER_VM_DOWN_BEFORE_BACKUP = $config{POWER_VM_DOWN_BEFORE_BACKUP};
-		$VM_SNAPSHOT_MEMORY = $config{VM_SNAPSHOT_MEMORY};
-		$VM_SNAPSHOT_QUIESCE = $config{VM_SNAPSHOT_QUIESCE};
-		$VM_VMDK_FILES = $config{VM_VMDK_FILES};
+		if (defined($config{LOG_LEVEL})) {
+			$LOG_LEVEL = $config{LOG_LEVEL};
+			$LOGLEVEL = $loglevel{$LOG_LEVEL};
+		}
+		
+		if (defined($config{VM_BACKUP_DATASTORE})) {		
+			$VM_BACKUP_DATASTORE = $config{VM_BACKUP_DATASTORE};
+		}
+		if (defined($config{VM_BACKUP_DIRECTORY})) {		
+			$VM_BACKUP_DIRECTORY = $config{VM_BACKUP_DIRECTORY};
+		}
+		if (defined($config{VM_BACKUP_ROTATION_COUNT})) {		
+			$VM_BACKUP_ROTATION_COUNT = $config{VM_BACKUP_ROTATION_COUNT};
+		}
+		if (defined($config{DISK_BACKUP_FORMAT})) {		
+			$DISK_BACKUP_FORMAT = $config{DISK_BACKUP_FORMAT};
+		}
+		if (defined($config{ADAPTER_FORMAT})) {		
+			$ADAPTER_FORMAT = $config{ADAPTER_FORMAT};
+		}
+		if (defined($config{POWER_VM_DOWN_BEFORE_BACKUP})) {		
+			$POWER_VM_DOWN_BEFORE_BACKUP = $config{POWER_VM_DOWN_BEFORE_BACKUP};
+		}
+		if (defined($config{VM_SNAPSHOT_MEMORY})) {		
+			$VM_SNAPSHOT_MEMORY = $config{VM_SNAPSHOT_MEMORY};
+		}
+		if (defined($config{VM_SNAPSHOT_QUIESCE})) {		
+			$VM_SNAPSHOT_QUIESCE = $config{VM_SNAPSHOT_QUIESCE};
+		}
+		if (defined($config{VM_VMDK_FILES})) {		
+			$VM_VMDK_FILES = $config{VM_VMDK_FILES};
+		}
 	
 	} elsif($success_backups{$vm_name} ne -1 && $success_backups{$vm_name} ne 1) {
 		$success_backups{$vm_name} = -1;
-		&log("error", "ERROR - Unable to locate configuration file for VM: ". $vm_name . "\n");
+		&log("info", "no configuration file for VM: ". $vm_name);
 	}
 }
 
@@ -494,7 +587,7 @@ sub processFile {
       		if($line) {
 	        	if($line =~ /^\s*:|:\s*$/){
         	    		&log("error", "Error in Parsing File at line: $line_no");
-	            		&log("info", "Continuing to the next line");
+	            		&log("debug", "Continuing to the next line");
         	    		next;
          		}
 		        my $vm = $line;
@@ -582,20 +675,21 @@ sub backUpVMs {
 					my ($vm_datastore) = ($vmx_config=~ /\[([^]]+)/);
 					
 					if(defined($configDir)) {
-						&log("info", "CONFIG - USING CONFIGURATION FILE = " . $vm_name);
-                                		&log("info", "CONFIG - BACKUP_LOG_OUTPUT = " . $backup_log_output);
-                        	                &log("info", "CONFIG - VM_BACKUP_DATASTORE = " . $VM_BACKUP_DATASTORE);
-                	                        &log("info", "CONFIG - VM_BACKUP_DIRECTORY = " . $VM_BACKUP_DIRECTORY);
-        	                                &log("info", "CONFIG - DISK_BACKUP_FORMAT = " . $DISK_BACKUP_FORMAT);
-	                                        &log("info", "CONFIG - ADAPTER_FORMAT = " . $ADAPTER_FORMAT);
+						&log("debug", "CONFIG - USING CONFIGURATION FILE = " . $vm_name);
+                                		&log("debug", "CONFIG - BACKUP_LOG_OUTPUT = " . $backup_log_output);
+                        	                &log("debug", "CONFIG - VM_BACKUP_DATASTORE = " . $VM_BACKUP_DATASTORE);
+                	                        &log("debug", "CONFIG - VM_BACKUP_DIRECTORY = " . $VM_BACKUP_DIRECTORY);
+                	                        &log("debug", "CONFIG - VM_BACKUP_ROTATION_COUNT = " . $VM_BACKUP_ROTATION_COUNT);
+        	                                &log("debug", "CONFIG - DISK_BACKUP_FORMAT = " . $DISK_BACKUP_FORMAT);
+	                                        &log("debug", "CONFIG - ADAPTER_FORMAT = " . $ADAPTER_FORMAT);
                                         	my $powerDowntext = ($POWER_VM_DOWN_BEFORE_BACKUP ? "YES" : "NO");
-                                                &log("info", "CONFIG - POWER_VM_DOWN_BEFORE_BACKUP = " . $powerDowntext);
+                                                &log("debug", "CONFIG - POWER_VM_DOWN_BEFORE_BACKUP = " . $powerDowntext);
                                         	my $memtext = ($VM_SNAPSHOT_MEMORY ? "YES" : "NO");
-                        	                &log("info", "CONFIG - VM_SNAPSHOT_MEMORY = " . $memtext);
+                        	                &log("debug", "CONFIG - VM_SNAPSHOT_MEMORY = " . $memtext);
                 	                        my $quitext = ($VM_SNAPSHOT_QUIESCE ? "YES" : "NO");
-                                	        &log("info", "CONFIG - VM_SNAPSHOT_QUIESCE = " . $quitext);
-        	                                &log("info", "CONFIG - VM_BACKUP_DIR_NAMING_CONVENTION = " . $VM_BACKUP_DIR_NAMING_CONVENTION);
-	                                        &log("info", "CONFIG - VM_VMDK_FILES = " . $VM_VMDK_FILES . "\n");	
+                                	        &log("debug", "CONFIG - VM_SNAPSHOT_QUIESCE = " . $quitext);
+        	                                &log("debug", "CONFIG - VM_BACKUP_DIR_NAMING_CONVENTION = " . $VM_BACKUP_DIR_NAMING_CONVENTION);
+	                                        &log("debug", "CONFIG - VM_VMDK_FILES = " . $VM_VMDK_FILES . "\n");	
 					}
 
 					if($enable_dryrun eq 1) {
@@ -606,26 +700,26 @@ sub backUpVMs {
 				        		$licenseType .= $_->editionKey . " ";
 					        }
 
-						&log("info", "---------- DRYRUN DEBUG INFO " . $vm_name . " ----------");
-						&log("info", "DEBUG - Host Build: ". $content->about->fullName);
-						&log("info", "DEBUG - License: " . $licenseType);
-						&log("info", "DEBUG - Host: ". $host);
-						&log("info", "DEBUG - Virtual Machine: ". $vm_name);
-						&log("info", "DEBUG - VM ConfigPath: ". $vmx_config); 
-						&log("info", "DEBUG - VMX File: ". $vmx_file);
-						&log("info", "DEBUG - BackupConfigPath: ". $vm_backup_dir ."/". $vmx_file);
-						&log("info", "DEBUG - BackupPath: ". $vm_backup_dir);
-						&log("info", "DEBUG - VM Datastore: ". $vm_datastore);
-						&log("info", "DEBUG - VMDK(s):");
+						&log("debug", "---------- DRYRUN DEBUG INFO " . $vm_name . " ----------");
+						&log("debug", "DEBUG - Host Build: ". $content->about->fullName);
+						&log("debug", "DEBUG - License: " . $licenseType);
+						&log("debug", "DEBUG - Host: ". $host);
+						&log("debug", "DEBUG - Virtual Machine: ". $vm_name);
+						&log("debug", "DEBUG - VM ConfigPath: ". $vmx_config); 
+						&log("debug", "DEBUG - VMX File: ". $vmx_file);
+						&log("debug", "DEBUG - BackupConfigPath: ". $vm_backup_dir ."/". $vmx_file);
+						&log("debug", "DEBUG - BackupPath: ". $vm_backup_dir);
+						&log("debug", "DEBUG - VM Datastore: ". $vm_datastore);
+						&log("debug", "DEBUG - VMDK(s):");
 						my $vm_disks = $vm_view->layout->disk;
 						foreach(@$vm_disks) {
 							my $disk_files = $_->diskFile;
 							foreach(@$disk_files) {
-								&log("info", "DEBUG - ". $_);
+								&log("debug", "DEBUG - ". $_);
 							}
 						}
 						$success_backups{$vm_name} = 1;
-						&log("info", "---------- DRYRUN DEBUG INFO " . $vm_name . " ----------\n");
+						&log("debug", "---------- DRYRUN DEBUG INFO " . $vm_name . " ----------\n");
 					} else {
 
 						#####################
@@ -869,7 +963,7 @@ sub backupVMDK {
 						} until(($copyThreadStatus eq "copySuccess") || ($copyThreadStatus eq "copyFail") || ($copyThreadStatus eq "exit"));
 				
 						if ($copyThreadStatus eq "copySuccess") {
-                                        		&log("debug", "backupVMDK: Successfully completed backup for ". $_  ." Elapsed time: ". $elapsedTime ." min");		   				     } else {
+                                        		&log("info", "backupVMDK: Successfully completed backup for ". $_  ." Elapsed time: ". $elapsedTime ." min");		   				     } else {
 							&log("error", "backupVMDK: ERROR - Unable to backup VMDK: ". $_  ." Elapsed time: ". $elapsedTime ." min");
 						}	
 					}
