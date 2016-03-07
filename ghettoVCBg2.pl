@@ -900,8 +900,10 @@ sub checkVMBackupRotation {
 
 				my $fm = Vim::get_view (mo_ref => $content->{fileManager});
 				eval {
-					$fm->DeleteDatastoreFile(name => $path);
 					&log("debug", "Purging ". $path ." due to rotation max");
+					$fm->DeleteDatastoreFile(name => $path);
+					if($@) { &log("debug", "Unable to purge with: ".$@." ");}
+					&log("debug", "Purge complete");
 				};
 				if($@) { &log("debug", "Unable to purge ". $path ." due to rotation max");}
 			} else {
